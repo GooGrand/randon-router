@@ -7,9 +7,10 @@ import {
 	getCoreRowModel,
 	getSortedRowModel,
 	type SortingState,
+	type VisibilityState,
 	useReactTable,
 } from "@tanstack/react-table";
-import { formatEther, formatGwei, formatUnits, parseUnits } from "viem";
+import { formatUnits, parseUnits } from "viem";
 import {
 	getQuoteComparison,
 	fallbackTokenList,
@@ -30,6 +31,13 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import {
+	Accordion,
+	AccordionContent,
+	AccordionItem,
+	AccordionTrigger,
+} from "@/components/ui/accordion";
 import BigNumber from "bignumber.js";
 
 type SearchState = {
@@ -93,17 +101,56 @@ const trimDecimals = (value: string, digits = 6) => {
 	return `${whole}.${fractional.slice(0, digits)}`;
 };
 
-const formatEtherDisplay = (value: string, digits = 6) => {
+const toWeiEquivalent = (value: string, tokenDecimals: number) => {
 	try {
-		return trimDecimals(formatEther(BigInt(value)), digits);
+		const rawAmount = BigInt(value);
+		if (tokenDecimals === 18) {
+			return rawAmount;
+		}
+		if (tokenDecimals < 18) {
+			return rawAmount * 10n ** BigInt(18 - tokenDecimals);
+		}
+		return rawAmount / 10n ** BigInt(tokenDecimals - 18);
+	} catch {
+		return null;
+	}
+};
+
+const formatWeiDisplay = (value: string, tokenDecimals: number) => {
+	const weiEquivalent = toWeiEquivalent(value, tokenDecimals);
+	if (weiEquivalent === null) {
+		return value;
+	}
+	return weiEquivalent.toString();
+};
+
+const formatGweiDisplay = (
+	value: string,
+	tokenDecimals: number,
+	digits = 6,
+) => {
+	const weiEquivalent = toWeiEquivalent(value, tokenDecimals);
+	if (weiEquivalent === null) {
+		return value;
+	}
+	try {
+		return trimDecimals(formatUnits(weiEquivalent, 9), digits);
 	} catch {
 		return value;
 	}
 };
 
-const formatGweiDisplay = (value: string, digits = 6) => {
+const formatEtherDisplay = (
+	value: string,
+	tokenDecimals: number,
+	digits = 6,
+) => {
+	const weiEquivalent = toWeiEquivalent(value, tokenDecimals);
+	if (weiEquivalent === null) {
+		return value;
+	}
 	try {
-		return trimDecimals(formatGwei(BigInt(value)), digits);
+		return trimDecimals(formatUnits(weiEquivalent, 18), digits);
 	} catch {
 		return value;
 	}
@@ -350,6 +397,11 @@ function App() {
 	const [displayTokenAmount, setDisplayTokenAmount] = useState("");
 	const [isTokenAmountFocused, setIsTokenAmountFocused] = useState(false);
 	const [sorting, setSorting] = useState<SortingState>([]);
+	const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({
+			rawResponse: false,
+			calldataResponse: false,
+			simulationResult: false,
+	});
 
 	useEffect(() => {
 		setFormState(search);
@@ -359,6 +411,7 @@ function App() {
 		queryKey: ["quote-comparison", search],
 		queryFn: () => getQuoteComparison({ data: search }),
 		placeholderData: keepPreviousData,
+		refetchOnWindowFocus: false,
 	});
 
 	const tokenListQuery = useQuery({
@@ -375,7 +428,6 @@ function App() {
       const result = new BigNumber(search.tokenAmount).multipliedBy(BigNumber(2).pow(96)).dividedBy(query.data.gasPriceTokenIn);
       return result.toString(); 
     } catch (e) {
-      console.error("Failed to scale gas price in token in:", e);
       return null;
     }
   }, [query.data?.gasPriceTokenIn, search]);
@@ -435,69 +487,278 @@ function App() {
 		() => [
 			columnHelper.accessor("aggregator", {
 				header: "Aggregator",
-				cell: (info) => info.getValue(),
+				cell: (info) => (
+					<span className="whitespace-nowrap">{info.getValue()}</span>
+				),
 				enableSorting: false,
 			}),
-			columnHelper.accessor("amountOut", {
-				header: "Amount Out",
-				sortingFn: (rowA, rowB, columnId) =>
-					compareNumericStrings(
-						rowA.getValue<string | null>(columnId),
-						rowB.getValue<string | null>(columnId),
-					),
-				cell: (info) => {
-					const value = info.getValue();
-					if (value === null || info.row.original.failed) {
-						return <span className="text-slate-400">—</span>;
-					}
+			columnHelper.group({
+				id: "outputGroup",
+				header: "Output",
+				columns: [
+					columnHelper.accessor("amountOut", {
+						header: "Amount Out",
+						sortingFn: (rowA, rowB, columnId) =>
+							compareNumericStrings(
+								rowA.getValue<string | null>(columnId),
+								rowB.getValue<string | null>(columnId),
+							),
+						cell: (info) => {
+							const value = info.getValue();
+							if (value === null || info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
 
-					return (
-						<Popover>
-							<PopoverTrigger asChild>
-								<button
-									type="button"
-									className="font-mono text-left underline decoration-dotted decoration-slate-400 underline-offset-4 focus:outline-none"
-								>
-									{formatTokenDisplay(value, tokenOutDecimals)}
-								</button>
-							</PopoverTrigger>
-							<PopoverContent align="start" className="bg-white">
-								<div className="space-y-2 *:**:text-black">
-									<div className="flex items-center justify-between gap-3">
-										<span className="text-white/60">Wei</span>
-										<span className="font-mono text-white">{value}</span>
-									</div>
-									<div className="flex items-center justify-between gap-3">
-										<span className="text-white/60">Gwei</span>
-										<span className="font-mono text-white">
-											{formatGweiDisplay(value)}
-										</span>
-									</div>
-									<div className="flex items-center justify-between gap-3">
-										<span className="text-white/60">Ether</span>
-										<span className="font-mono text-white">
-											{formatEtherDisplay(value)}
-										</span>
-									</div>
-								</div>
-							</PopoverContent>
-						</Popover>
-					);
-				},
+							return (
+								<Popover>
+									<PopoverTrigger asChild>
+										<button
+											type="button"
+											className="font-mono text-left underline decoration-dotted decoration-slate-400 underline-offset-4 focus:outline-none"
+										>
+											{formatTokenDisplay(value, tokenOutDecimals)}
+										</button>
+									</PopoverTrigger>
+									<PopoverContent align="start" className="bg-white">
+										<div className="space-y-2 *:**:text-black">
+											<div className="flex items-center justify-between gap-3">
+												<span className="text-white/60">Wei</span>
+												<span className="font-mono text-white">
+													{formatWeiDisplay(value, tokenOutDecimals)}
+												</span>
+											</div>
+											<div className="flex items-center justify-between gap-3">
+												<span className="text-white/60">Gwei</span>
+												<span className="font-mono text-white">
+													{formatGweiDisplay(value, tokenOutDecimals)}
+												</span>
+											</div>
+											<div className="flex items-center justify-between gap-3">
+												<span className="text-white/60">Ether</span>
+												<span className="font-mono text-white">
+													{formatEtherDisplay(value, tokenOutDecimals)}
+												</span>
+											</div>
+										</div>
+									</PopoverContent>
+								</Popover>
+							);
+						},
+					}),
+					columnHelper.display({
+						id: "simulationOutputTokenAmount",
+						header: "Sim Output",
+						enableSorting: true,
+						sortingFn: (rowA, rowB) =>
+							compareNumericStrings(
+								rowA.original.simulationResult?.outputTokenAmount ?? null,
+								rowB.original.simulationResult?.outputTokenAmount ?? null,
+							),
+						cell: (info) => {
+							if (info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const outputTokenAmount =
+								info.row.original.simulationResult?.outputTokenAmount;
+							if (!outputTokenAmount) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							return (
+								<span className="font-mono">
+									{formatTokenDisplay(outputTokenAmount, tokenOutDecimals)}
+								</span>
+							);
+						},
+					}),
+					columnHelper.display({
+						id: "outputDiff",
+						header: "Diff",
+						enableSorting: true,
+						sortingFn: (rowA, rowB) => {
+							try {
+								const amountOutA = rowA.original.amountOut;
+								const simOutputA = rowA.original.simulationResult?.outputTokenAmount;
+								const amountOutB = rowB.original.amountOut;
+								const simOutputB = rowB.original.simulationResult?.outputTokenAmount;
+
+								const diffA =
+									amountOutA && simOutputA
+										? (BigInt(simOutputA) - BigInt(amountOutA)).toString()
+										: null;
+								const diffB =
+									amountOutB && simOutputB
+										? (BigInt(simOutputB) - BigInt(amountOutB)).toString()
+										: null;
+
+								return compareNumericStrings(diffA, diffB);
+							} catch {
+								return 0;
+							}
+						},
+						cell: (info) => {
+							if (info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const amountOut = info.row.original.amountOut;
+							const simOutput =
+								info.row.original.simulationResult?.outputTokenAmount;
+
+							if (!amountOut || !simOutput) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							try {
+								const diff = BigInt(simOutput) - BigInt(amountOut);
+								const absDiff = diff < 0n ? -diff : diff;
+								const sign = diff > 0n ? "+" : diff < 0n ? "-" : "";
+								const diffColor =
+									diff > 0n
+										? "text-emerald-600"
+										: diff < 0n
+											? "text-red-600"
+											: "text-slate-500";
+
+								return (
+									<span className={`font-mono ${diffColor}`}>
+										{sign}
+										{formatTokenDisplay(absDiff.toString(), tokenOutDecimals)}
+									</span>
+								);
+							} catch {
+								return <span className="text-slate-400">—</span>;
+							}
+						},
+					}),
+				],
 			}),
-			columnHelper.accessor("gasUsed", {
+			columnHelper.group({
+				id: "gasGroup",
 				header: "Gas",
-				cell: (info) => {
-					const value = info.getValue();
-					if (value === null || info.row.original.failed) {
-						return <span className="text-slate-400">—</span>;
-					}
-					return (
-						<span className="font-mono">
-							{new Intl.NumberFormat("en-US").format(value)}
-						</span>
-					);
-				},
+				columns: [
+					columnHelper.accessor("gasUsed", {
+						header: "Gas",
+						cell: (info) => {
+							const value = info.getValue();
+							if (value === null || info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
+							return (
+								<span className="font-mono">
+									{new Intl.NumberFormat("en-US").format(value)}
+								</span>
+							);
+						},
+					}),
+					columnHelper.display({
+						id: "simulationGasTotal",
+						header: "Sim Gas",
+						enableSorting: true,
+						sortingFn: (rowA, rowB) => {
+							const simulationA = rowA.original.simulationResult;
+							const simulationB = rowB.original.simulationResult;
+							const totalA = simulationA
+								? simulationA.approveTxGasUsed + simulationA.swapTxGasUsed
+								: null;
+							const totalB = simulationB
+								? simulationB.approveTxGasUsed + simulationB.swapTxGasUsed
+								: null;
+
+							return compareNumericStrings(
+								Number.isFinite(totalA) ? String(totalA) : null,
+								Number.isFinite(totalB) ? String(totalB) : null,
+							);
+						},
+						cell: (info) => {
+							if (info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const simulation = info.row.original.simulationResult;
+							if (!simulation) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const totalGas =
+								simulation.approveTxGasUsed + simulation.swapTxGasUsed;
+							if (!Number.isFinite(totalGas)) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							return (
+								<span className="font-mono">
+									{new Intl.NumberFormat("en-US").format(totalGas)}
+								</span>
+							);
+						},
+					}),
+					columnHelper.display({
+						id: "gasDiff",
+						header: "Diff",
+						enableSorting: true,
+						sortingFn: (rowA, rowB) => {
+							const quoteGasA = rowA.original.gasUsed;
+							const simulationA = rowA.original.simulationResult;
+							const quoteGasB = rowB.original.gasUsed;
+							const simulationB = rowB.original.simulationResult;
+
+							const simGasA = simulationA
+								? simulationA.approveTxGasUsed + simulationA.swapTxGasUsed
+								: null;
+							const simGasB = simulationB
+								? simulationB.approveTxGasUsed + simulationB.swapTxGasUsed
+								: null;
+
+							const diffA =
+								quoteGasA !== null && quoteGasA !== undefined && Number.isFinite(simGasA)
+									? String((simGasA as number) - quoteGasA)
+									: null;
+							const diffB =
+								quoteGasB !== null && quoteGasB !== undefined && Number.isFinite(simGasB)
+									? String((simGasB as number) - quoteGasB)
+									: null;
+
+							return compareNumericStrings(diffA, diffB);
+						},
+						cell: (info) => {
+							if (info.row.original.failed) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const quoteGas = info.row.original.gasUsed;
+							const simulation = info.row.original.simulationResult;
+							if (quoteGas === null || !simulation) {
+								return <span className="text-slate-400">—</span>;
+							}
+
+							const simGas =
+								simulation.approveTxGasUsed + simulation.swapTxGasUsed;
+							if (!Number.isFinite(simGas)) {
+								return <span className="text-slate-400">—</span>;
+							}
+							const diff = simGas - quoteGas;
+							if (!Number.isFinite(diff)) {
+								return <span className="text-slate-400">—</span>;
+							}
+							const sign = diff > 0 ? "+" : diff < 0 ? "-" : "";
+							const diffColor =
+								diff > 0
+									? "text-red-600"
+									: diff < 0
+										? "text-emerald-600"
+										: "text-slate-500";
+
+							return (
+								<span className={`font-mono ${diffColor}`}>
+									{sign}
+									{new Intl.NumberFormat("en-US").format(Math.abs(diff))}
+								</span>
+							);
+						},
+					}),
+				],
 			}),
 			columnHelper.accessor("sources", {
 				header: "Sources",
@@ -509,7 +770,15 @@ function App() {
 					if (!value || value.length === 0 || info.row.original.failed) {
 						return <span className="text-slate-400">—</span>;
 					}
-					return value.join(", ");
+					return (
+						<div className="flex flex-wrap gap-1">
+							{value.map((source) => (
+								<Badge key={source} variant="outline">
+									{source}
+								</Badge>
+							))}
+						</div>
+					);
 				},
 			}),
 			columnHelper.accessor("rawResponse", {
@@ -524,6 +793,16 @@ function App() {
 			}),
 			columnHelper.accessor("calldataResponse", {
 				header: "Calldata",
+				enableSorting: false,
+				cell: (info) => (
+					<RawResponseCell
+						value={info.getValue()}
+						failed={info.row.original.failed ?? false}
+					/>
+				),
+			}),
+			columnHelper.accessor("simulationResult", {
+				header: "Simulation",
 				enableSorting: false,
 				cell: (info) => (
 					<RawResponseCell
@@ -554,18 +833,20 @@ function App() {
 								<div className="space-y-2 *:**:text-black">
 									<div className="flex items-center justify-between gap-3">
 										<span className="text-white/60">Wei</span>
-										<span className="font-mono text-white">{rawString}</span>
+										<span className="font-mono text-white">
+											{formatWeiDisplay(rawString, tokenOutDecimals)}
+										</span>
 									</div>
 									<div className="flex items-center justify-between gap-3">
 										<span className="text-white/60">Gwei</span>
 										<span className="font-mono text-white">
-											{formatGweiDisplay(rawString)}
+											{formatGweiDisplay(rawString, tokenOutDecimals)}
 										</span>
 									</div>
 									<div className="flex items-center justify-between gap-3">
 										<span className="text-white/60">Ether</span>
 										<span className="font-mono text-white">
-											{formatEtherDisplay(rawString)}
+											{formatEtherDisplay(rawString, tokenOutDecimals)}
 										</span>
 									</div>
 								</div>
@@ -601,8 +882,10 @@ function App() {
 		columns,
 		state: {
 			sorting,
+			columnVisibility,
 		},
 		onSortingChange: setSorting,
+		onColumnVisibilityChange: setColumnVisibility,
 		getCoreRowModel: getCoreRowModel(),
 		getSortedRowModel: getSortedRowModel(),
 	});
@@ -642,7 +925,7 @@ function App() {
 			<div className="relative overflow-hidden">
 				<div className="hidden" />
 				<div className="hidden" />
-				<div className="mx-auto flex max-w-6xl flex-col gap-10 px-6 pb-16 pt-14">
+				<div className="mx-auto flex max-w-8xl flex-col gap-10 px-6 pb-16 pt-14">
 					<form
 						onSubmit={handleSubmit}
 						className="grid gap-4 rounded-md border border-slate-200 bg-white p-6"
@@ -678,7 +961,7 @@ function App() {
 									<SelectContent
 										position="popper"
 										align="start"
-										className="h-80 w-[var(--radix-select-trigger-width)] overflow-hidden"
+										className="h-80 w-(--radix-select-trigger-width) overflow-hidden"
 									>
 										{isTokenInOpen && (
 											<>
@@ -746,7 +1029,7 @@ function App() {
 									<SelectContent
 										position="popper"
 										align="start"
-										className="h-80 w-[var(--radix-select-trigger-width)] overflow-hidden"
+										className="h-80 w-(--radix-select-trigger-width) overflow-hidden"
 									>
 										{isTokenOutOpen && (
 											<>
@@ -837,6 +1120,56 @@ function App() {
 						</div>
 					</form>
 
+					<div className="rounded-md border border-slate-200 bg-white px-6">
+						<Accordion type="single" collapsible>
+							<AccordionItem value="table-settings" className="border-b-0">
+								<AccordionTrigger className="py-4 text-slate-900">
+									Table settings
+								</AccordionTrigger>
+								<AccordionContent className="pb-4">
+									<div className="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
+										<label className="flex items-center gap-2">
+											<Checkbox
+												checked={table.getColumn("rawResponse")?.getIsVisible()}
+												onCheckedChange={(checked) =>
+													setColumnVisibility((prev) => ({
+														...prev,
+														rawResponse: checked === true,
+													}))
+												}
+											/>
+											<span>Show Raw column</span>
+										</label>
+										<label className="flex items-center gap-2">
+											<Checkbox
+												checked={table.getColumn("calldataResponse")?.getIsVisible()}
+												onCheckedChange={(checked) =>
+													setColumnVisibility((prev) => ({
+														...prev,
+														calldataResponse: checked === true,
+													}))
+												}
+											/>
+											<span>Show Calldata column</span>
+										</label>
+										<label className="flex items-center gap-2">
+											<Checkbox
+												checked={table.getColumn("simulationResult")?.getIsVisible()}
+												onCheckedChange={(checked) =>
+													setColumnVisibility((prev) => ({
+														...prev,
+														simulationResult: checked === true,
+													}))
+												}
+											/>
+											<span>Show Simulation column</span>
+										</label>
+									</div>
+								</AccordionContent>
+							</AccordionItem>
+						</Accordion>
+					</div>
+
 					<div className="rounded-md border border-slate-200 bg-white p-6">
 						<div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
 							<div className="min-w-0">
@@ -844,7 +1177,7 @@ function App() {
 									Results
 								</p>
 								<h2
-									className="break-words text-2xl font-semibold"
+									className="wrap-break-word text-2xl font-semibold"
 									style={{
 										fontFamily: '"Space Grotesk", "Segoe UI", sans-serif',
 									}}
@@ -867,21 +1200,34 @@ function App() {
 								<span className="mt-0.5 inline-flex h-2 w-2 rounded-full bg-red-500" />
 								<div>
 									<p className="font-semibold">Quote request failed</p>
-									<span className="w-full text-red-700/80 text-wrap break-words">{String(query.data?.error)}</span>
+									<span className="w-full text-red-700/80 text-wrap wrap-break-word">{String(query.data?.error)}</span>
 								</div>
 							</div>
 						)}
 
 						{query.data?.status !== "error" && (
 							<div className="mt-6 overflow-x-auto rounded-md border border-slate-200">
-								<table className="min-w-full border-separate border-spacing-0 text-sm">
+								{query.isFetching && (
+									<div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+										<span className="h-2 w-2 animate-pulse rounded-full bg-slate-500" />
+										Loading quotes...
+									</div>
+								)}
+								<table
+									className={`min-w-full border-separate border-spacing-0 text-sm ${query.isFetching ? "animate-pulse" : ""}`}
+								>
 									<thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
 										{table.getHeaderGroups().map((headerGroup) => (
 											<tr key={headerGroup.id}>
 												{headerGroup.headers.map((header) => (
 													<th
 														key={header.id}
-														className="border-b border-slate-200 px-4 py-3 text-left font-semibold"
+														colSpan={header.colSpan}
+														className={`border-b border-slate-200 px-4 py-3 font-semibold ${
+															header.subHeaders.length > 0
+																? "bg-slate-100 text-center"
+																: "text-left"
+														}`}
 													>
 														{header.isPlaceholder ? null : header.column.getCanSort() ? (
 															<button

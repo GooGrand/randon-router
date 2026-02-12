@@ -22,6 +22,21 @@ type Token = {
 	priceUsd: number;
 };
 
+type SimulationResult = {
+  balanceOfBefore: string
+  balanceOfAfter: string
+  outputTokenAmount: string
+  outputToken: string
+  approveTxGasUsed: number
+  swapTxGasUsed: number
+  isSuccessful: boolean
+  simBlockNumber: string
+  simTime: string
+  simTimeTotal: string
+  requestId: string
+}
+
+
 type RawQuote = {
 	aggregator: string;
 	amountOut: string | null;
@@ -29,7 +44,7 @@ type RawQuote = {
 	sources: string[] | null;
 	rawResponse?: {} | null | undefined;
 	calldataResponse: Calldata | null;
-	simulationResult: any;
+	simulationResult: SimulationResult | undefined;
 	failed?: boolean;
 };
 
@@ -177,22 +192,9 @@ const simulate = async (
 				"content-type": "application/json",
 			},
 		}
-	)
-	// response
-	// {
-	// "balanceOfBefore":"134947",
-	// "balanceOfAfter":"20166366",
-	// "outputTokenAmount":"20031419",
-	// "outputToken":"0xdAC17F958D2ee523a2206206994597C13D831ec7",
-	// "approveTxGasUsed":46040,
-	// "swapTxGasUsed":734392,
-	// "isSuccessful":true,
-	// "simBlockNumber":"0x174bf50",
-	// "simTime":"177 ms",
-	// "simTimeTotal":"177 ms",
-	// "requestId":"effb30b8-ccc6-40dd-a97a-8b7ad41951ff"
-	// }
+	);
 }
+
 async function postScraperJson(url: string, payload: any, token: string) {
 	return fetchJson(
 		url,
@@ -611,7 +613,7 @@ const inch = async (
 		}
 	}
 	const calldata = {to: "0x111111125421cA6dc452d289314280a0f8842A65", data: calldataResponse.data};
-	let simulation = null;
+	let simulation: SimulationResult | undefined = undefined;
 	try {
 		simulation = await simulate(calldata, tokenIn.address, tokenOut.address, amountIn);
 	} catch (error) {
@@ -644,8 +646,10 @@ const settleQuotes = async (tasks: QuoteTask[]) => {
 					gasUsed: null,
 					sources: null,
 					rawResponse: null,
+					calldataResponse: null,
+					simulationResult: undefined,
 					failed: true,
-				},
+				} satisfies RawQuote,
 	);
 };
 
@@ -693,7 +697,7 @@ const calculateScores = (
 
 		return {
 			...item,
-			netOutput: Number.isFinite(netOutput) ? Number(netOutput.toFixed(4)) : 0,
+			netOutput: Number(netOutput.toFixed(18)),
 			distance: 0,
 			score: 0,
 			failed: item.failed ?? isFailed,
@@ -713,9 +717,10 @@ const calculateScores = (
 		const distance = netOutputMax
 			? ((netOutputMax - item.netOutput) / netOutputMax) * 100
 			: 0;
+
 		return {
 			...item,
-			distance: Number.isFinite(distance) ? Number(distance.toFixed(4)) : 0,
+			distance: Number.isFinite(distance) ? Number(distance.toFixed(8)) : 0,
 		};
 	});
 
@@ -867,6 +872,3 @@ export const getQuoteComparison = createServerFn({
 		};
 	}
 });
-const getKyberToken = () => {
-	return "eyJhbGciOiJSUzI1NiIsImtpZCI6IjYxZTIyYTA4LTYyYWQtNDYwMC04MGIzLWFlMDljNTIzOGNmMSIsInR5cCI6IkpXVCJ9.eyJhdWQiOltdLCJjbGllbnRfaWQiOiI4YTk1Y2VkOC0xNTMwLTQ1ZDAtYmMxNS1hNTYxNGQxZDhkMDgiLCJleHAiOjE3NzA3NjE0MTMsImV4dCI6e30sImlhdCI6MTc3MDc1NzgxMywiaXNzIjoiaHR0cHM6Ly9vYXV0aC1hcGkua3liZXJzd2FwLmNvbS8iLCJqdGkiOiJlOTAzN2I3MS04NDQ1LTQ2MGMtOWI3Yy05YzJmNWZhNThkYTciLCJuYmYiOjE3NzA3NTc4MTMsInNjcCI6W10sInN1YiI6IjM2ZDBlMmVhLTFhOTQtNDc3NC1iNjE1LTNiOGQyMmZjMTQxMCJ9.nVEf7izHsem5eCaGw1zNuAl7_pGm3Ypcq-Kg9tCQEJhHoeUKaIAYJaoxLPqS4Ce0kJV3cqVkYzEYcetz3YkhslS7k_7rapVJush7G0U2KGI4sHApGab1y9nzDP4aAytt05NHEp5UBikGmlsUWCUlukMdSuJ-J2gBGAcrHh58ZqQuYq94wKxKA31X0_W3X-jMulkvEnUMH_VdUmWkVn8WPv34f6bDeWUncF3uhia8bL4mtwrSzBxtL68Eu7SLIuZZrExAxou1BiSJJ6mvy2pgc_XLiRBcnhwUjDwmlnM0ZJ2NuYtFmHsMnTs55mUZgdNziA6C2b1SxXa14WCDmOwssIeAAopa3OBGsEw56UGbJ3docmDDNRUGIrvrul7kaagq2qbiXDLSnBVUeMHJ9mMjL9pOUOfsT4eNTOcVhfqxho8L1TWxbPrAjiCtNwjQlHaJ_N4t-i9Wpx6Sh8M8cRyieDWCpJLF5uD8-jDpImYp88kQQnrNft2HNhckCC-LzLwe8hmb0kZRexf8IfJVN4hBqOhYYKgAvpTN5i0dsIeNUzJWLd5EYww_pM5MMIOqje5-NeeGTpEK0PZ92YXegjT34bsBP8D5e9E-2tCp3iI7nLo2HuFw9CWNm-DsKYC3nHczhXBu6h0T6D2ykUD-6haR0cYAy8poEvEi7QRzaHlGTwE";
-};
