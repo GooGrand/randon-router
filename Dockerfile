@@ -1,16 +1,14 @@
-FROM node:22-alpine AS builder
+FROM oven/bun:1 AS builder
 
 WORKDIR /app
 
-RUN corepack enable
-
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN bun install
 
 COPY . .
-RUN pnpm build
+RUN bun run build
 
-FROM node:22-alpine AS runner
+FROM oven/bun:1 AS runner
 
 WORKDIR /app
 
@@ -22,4 +20,4 @@ COPY --from=builder /app/.output ./.output
 
 EXPOSE 3000
 
-CMD ["node", ".output/server/index.mjs"]
+CMD ["bun", ".output/server/index.mjs"]
