@@ -9,6 +9,11 @@ declare global {
 
 export type OrderBy = "score" | "net" | "output";
 
+type Calldata = {
+	to: string;
+	data: string;
+};
+
 type Token = {
 	symbol: string;
 	name: string;
@@ -23,7 +28,7 @@ type RawQuote = {
 	gasUsed: number | null;
 	sources: string[] | null;
 	rawResponse?: {} | null | undefined;
-	calldataResponse?: unknown;
+	calldataResponse: Calldata | null;
 	failed?: boolean;
 };
 
@@ -101,6 +106,8 @@ const fallbackTokensBySymbol: Record<string, Token> = {
 export const fallbackTokenList = Object.values(fallbackTokensBySymbol);
 
 const chunkSizes = [1, 5, 10, 15, 20, 30, 50, 75, 100, 125, 150, 200];
+const recipient = "0x40afefb746b5d79cecfd889d48fd1bc617deaa23"
+const sender = "0x40afefb746b5d79cecfd889d48fd1bc617deaa23"
 
 type ScraperOptions = {
 	strictSSL?: boolean;
@@ -141,7 +148,49 @@ const fetchJson = async (
 	return scraper(requestOptions);
 };
 
-async function postScraperJson(url: string, payload: unknown, token: string) {
+
+const simulate = async (
+	calldata: Calldata,
+	tokenIn: string,
+	outputToken: string,
+	tokenInAmount: string
+) => {
+	return fetchJson(
+		"https://dc1.invisium.com/simulation/ethereum/sim-dln-output-amount",
+		{
+			method: "POST",
+			body: {
+				recipient: "",
+				outputToken,
+				tokenIn,
+				tokenInAmount,
+				tx: {
+					from: "",
+					to: calldata.to,
+					input: calldata.data
+				}
+			} as any,
+			headers: {
+				"content-type": "application/json",
+			},
+		}
+	)
+	// response
+	// {
+	// "balanceOfBefore":"134947",
+	// "balanceOfAfter":"20166366",
+	// "outputTokenAmount":"20031419",
+	// "outputToken":"0xdAC17F958D2ee523a2206206994597C13D831ec7",
+	// "approveTxGasUsed":46040,
+	// "swapTxGasUsed":734392,
+	// "isSuccessful":true,
+	// "simBlockNumber":"0x174bf50",
+	// "simTime":"177 ms",
+	// "simTimeTotal":"177 ms",
+	// "requestId":"effb30b8-ccc6-40dd-a97a-8b7ad41951ff"
+	// }
+}
+async function postScraperJson(url: string, payload: any, token: string) {
 	return fetchJson(
 		url,
 		{
@@ -299,7 +348,7 @@ const callBlazingTokenPrice = async (
 	tokenOut: Token,
 	amountIn: string,
 ) => {
-	const url = `https://dc1.invisium.com/router/ethereum/quote?asset_in=${tokenIn.address}&asset_out=${tokenOut.address}&amount_in=${amountIn}&recipient=0x40afefb746b5d79cecfd889d48fd1bc617deaa23&min_buy_amount=0`;
+	const url = `https://dc1.invisium.com/router/ethereum/quote?asset_in=${tokenIn.address}&asset_out=${tokenOut.address}&amount_in=${amountIn}&recipient=${recipient}&min_buy_amount=0`;
 	const res = await fetchJson(url, { method: "GET" }, { strictSSL: false });
 	return res.gas_price_token_in as string;
 };
@@ -312,7 +361,7 @@ const callBlazingNew = async (
 	disablePrice: "true" | "false",
 ): Promise<RawQuote> => {
 	const chunkParam = chunkNumber === null ? "" : `&chunk_number=${chunkNumber}`;
-	const url = `https://dc1.invisium.com/router/ethereum/quote?asset_in=${tokenIn.address}&asset_out=${tokenOut.address}&amount_in=${amountIn}&recipient=0x40afefb746b5d79cecfd889d48fd1bc617deaa23&simulate=true&min_buy_amount=0&disable_price=${disablePrice}${chunkParam}`;
+	const url = `https://dc1.invisium.com/router/ethereum/quote?asset_in=${tokenIn.address}&asset_out=${tokenOut.address}&amount_in=${amountIn}&recipient=${recipient}&simulate=true&min_buy_amount=0&disable_price=${disablePrice}${chunkParam}`;
 	const res = await fetchJson(url, { method: "GET" }, { strictSSL: false });
 
 	const routes = Array.isArray(res.route)
@@ -336,6 +385,7 @@ const callBlazingNew = async (
 		gasUsed: Number(res.gas_used ?? 0),
 		sources,
 		rawResponse: res,
+		calldataResponse: {to: res.settler_address, data: res.call}
 	};
 };
 
@@ -366,7 +416,7 @@ const kyberswap = async (
 			),
 		),
 	);
-	let calldataResponse: unknown = null;
+	let calldataResponse: any | null = null;
 	if (calldataAggregators.has("KyberSwap")) {
 		let deadline = Math.floor((Date.now() / 1000) + 2 * 60);
 		try {
@@ -376,9 +426,9 @@ const kyberswap = async (
 					routeSummary: res.data.routeSummary,
 					deadline: deadline,
 					enableGasEstimation: false,
-					recipient: "0x40aFEfb746b5D79cecfD889D48Fd1bc617deaA23",
+					recipient: recipient,
 					referral: "",
-					sender: "0x40aFEfb746b5D79cecfD889D48Fd1bc617deaA23",
+					sender: sender,
 					skipSimulateTx: true,
 					slippageTolerance: 50,
 					source: "kyberswap",
@@ -396,7 +446,7 @@ const kyberswap = async (
 		gasUsed: Number(summary.gas ?? 0),
 		sources,
 		rawResponse: res,
-		calldataResponse,
+		calldataResponse: {to: calldataResponse.routerAddress, data: calldataResponse.data},
 	};
 };
 
@@ -410,7 +460,7 @@ const zeroEx = async (
 		return fallbackQuote("0x");
 	}
 
-	const url = `https://api.0x.org/swap/allowance-holder/quote?chainId=1&sellToken=${tokenIn.address}&buyToken=${tokenOut.address}&sellAmount=${amountIn}&taker=0x40afefb746b5d79cecfd889d48fd1bc617deaa23`;
+	const url = `https://api.0x.org/swap/allowance-holder/quote?chainId=1&sellToken=${tokenIn.address}&buyToken=${tokenOut.address}&sellAmount=${amountIn}&taker=${recipient}`;
 	const res = await fetchJson(url, {
 		method: "GET",
 		headers: {
@@ -430,6 +480,7 @@ const zeroEx = async (
 		gasUsed: Number(res?.transaction?.gas ?? 0),
 		sources,
 		rawResponse: res,
+		calldataResponse: {to: res.transaction.to, data: res.transaction.data}
 	};
 };
 
@@ -439,7 +490,7 @@ const matcha = async (
 	amountIn: string,
 ): Promise<RawQuote> => {
 	const jwt = await getMatchaToken();
-	const url = `https://matcha.xyz/api/swap/quote?chainId=1&buyToken=${tokenOut.address}&sellToken=${tokenIn.address}&sellAmount=${amountIn}&useIntents=true&taker=0x663DC15D3C1aC63ff12E45Ab68FeA3F0a883C251&slippageBps=50`;
+	const url = `https://matcha.xyz/api/swap/quote?chainId=1&buyToken=${tokenOut.address}&sellToken=${tokenIn.address}&sellAmount=${amountIn}&useIntents=false&taker=${recipient}&slippageBps=50`;
 	const res = await fetchJson(url, {
 		method: "GET",
 		headers: {
@@ -458,6 +509,7 @@ const matcha = async (
 		gasUsed: Number(res?.transaction?.gas ?? 0),
 		sources,
 		rawResponse: res,
+		calldataResponse: null
 	};
 };
 
@@ -466,7 +518,7 @@ const inch = async (
 	tokenOut: Token,
 	amountIn: string,
 ): Promise<RawQuote> => {
-	const url = `https://proxy-app.1inch.io/v2.0/v2.2/chain/1/router/v6/quotesv2?fromTokenAddress=${tokenIn.address}&toTokenAddress=${tokenOut.address}&amount=${amountIn}&gasPrice=148636342&preset=maxReturnResult&walletAddress=0x40aFEfb746b5D79cecfD889D48Fd1bc617deaA23&excludedProtocols=PMM1,PMM2,PMM3,PMM4,PMM5,PMM6,PMM7,PMM8,PMM9,PMM10,PMM11,PMM12,PMM13,PMM14,PMM15,PMM16`;
+	const url = `https://proxy-app.1inch.io/v2.0/v2.2/chain/1/router/v6/quotesv2?fromTokenAddress=${tokenIn.address}&toTokenAddress=${tokenOut.address}&amount=${amountIn}&gasPrice=148636342&preset=maxReturnResult&walletAddress=${recipient}&excludedProtocols=PMM1,PMM2,PMM3,PMM4,PMM5,PMM6,PMM7,PMM8,PMM9,PMM10,PMM11,PMM12,PMM13,PMM14,PMM15,PMM16`;
 	const token = await getInchToken();
 	const res = await fetchJson(url, {
 		method: "GET",
@@ -491,7 +543,7 @@ const inch = async (
 			)
 		: [];
 
-	let calldataResponse: unknown = null;
+	let calldataResponse: any | null = null;
 	if (calldataAggregators.has("1Inch")) {
 		try {
 			// Track request ID counter
@@ -512,7 +564,7 @@ const inch = async (
 				id: requestId,
 				slippage: 0.5,
 				toTokenAddress: tokenOut.address,
-				walletAddress: "0xEDfe2dC6191eA576664Ac9D25f5A47CAc8EbC15a"
+				walletAddress: sender
 			}
 			const buildUrl = `https://proxy-app.1inch.io/v2.0/bff/v1.0/v6.0/1/build?version=2`;
 			calldataResponse = await postScraperJson(buildUrl, data, token);
@@ -527,7 +579,8 @@ const inch = async (
 		gasUsed: Number(res?.bestResult?.gas ?? 0),
 		sources,
 		rawResponse: res,
-		calldataResponse,
+		// TODO find what to call for inch
+		calldataResponse: {to: "", data: calldataResponse.data},
 	};
 };
 
