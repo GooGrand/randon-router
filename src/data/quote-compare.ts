@@ -638,6 +638,7 @@ type QuoteTask = {
 
 const settleQuotes = async (tasks: QuoteTask[]) => {
 	const results = await Promise.allSettled(tasks.map((task) => task.promise));
+	console.log("Quotes settled", results);
 	return results.map((result, index) =>
 		result.status === "fulfilled"
 			? result.value
@@ -664,7 +665,7 @@ const calculateScores = (
 	}
 
 	const successful = raw.filter(
-		(item) => item.amountOut !== null && item.gasUsed !== null,
+		(item) => item.simulationResult?.outputTokenAmount !== undefined && !BigNumber(item.simulationResult?.swapTxGasUsed).plus(item.simulationResult?.approveTxGasUsed ?? 0).isZero(),
 	);
 
 	if (successful.length === 0) {
@@ -672,27 +673,17 @@ const calculateScores = (
 			...item,
 			netOutput: 0,
 			distance: 0,
-			score: 0,
+			score: Number.POSITIVE_INFINITY,
 			failed: true,
 		}));
 	}
-
-	const amountOutValues = successful.map((item) => Number(item.amountOut));
-	const gasUsedValues = successful.map((item) => Number(item.gasUsed));
-
-	const amountOutMax = Math.max(...amountOutValues);
-	const amountOutMin = Math.min(...amountOutValues);
-	const gasUsedMax = Math.max(...gasUsedValues);
-	const gasUsedMin = Math.min(...gasUsedValues);
 
 	const tokenAmountNumber = Number(amountIn);
 
 	const withNet = raw.map((item) => {
 		const isFailed = item.amountOut === null || item.gasUsed === null;
 		const amountOut =
-			item.amountOut === null
-				? new BigNumber(0)
-				: new BigNumber(item.amountOut);
+			item.amountOut === null ? new BigNumber(0) : new BigNumber(item.amountOut);
 		const gasUsed =
 			item.gasUsed === null ? new BigNumber(0) : new BigNumber(item.gasUsed);
 		const gasCost = gasUsed.multipliedBy(gasPriceTokenIn);
@@ -721,9 +712,10 @@ const calculateScores = (
 			};
 		}
 
-		const distance = netOutputMax
-			? ((netOutputMax - item.netOutput) / netOutputMax) * 100
-			: 0;
+		const distance =
+			netOutputMax > 0
+				? ((netOutputMax - item.netOutput) / netOutputMax) * 100
+				: 0;
 
 		return {
 			...item,
@@ -733,16 +725,16 @@ const calculateScores = (
 
 	const successfulSimulations = withDistance.filter((item) => {
 		const simulation = item.simulationResult;
-		if (!simulation?.isSuccessful) {
-			return false;
-		}
-		return Number.isFinite(Number(simulation.outputTokenAmount));
+		return (
+			!!simulation?.isSuccessful &&
+			Number.isFinite(Number(simulation.outputTokenAmount))
+		);
 	});
 
 	if (successfulSimulations.length === 0) {
 		return withDistance.map((item) => ({
 			...item,
-			score: 0,
+			score: Number.POSITIVE_INFINITY,
 		}));
 	}
 
@@ -750,10 +742,7 @@ const calculateScores = (
 		Number(item.simulationResult?.outputTokenAmount ?? 0),
 	);
 	const simulationGasValues = successfulSimulations.map((item) => {
-		const simulation = item.simulationResult;
-		if (!simulation) {
-			return 0;
-		}
+		const simulation = item.simulationResult!;
 		return simulation.approveTxGasUsed + simulation.swapTxGasUsed;
 	});
 
@@ -762,50 +751,56 @@ const calculateScores = (
 	const simulationGasMax = Math.max(...simulationGasValues);
 	const simulationGasMin = Math.min(...simulationGasValues);
 
-	return withDistance.map((item) => {
-		if (item.failed) {
-			return {
-				...item,
-				score: 0,
-			};
-		}
+	const sqrtTwo = new BigNumber(2).sqrt();
 
+	return withDistance.map((item) => {
 		const simulation = item.simulationResult;
 		if (!simulation?.isSuccessful) {
 			return {
 				...item,
-				score: 0,
+				score: Number.POSITIVE_INFINITY,
 			};
 		}
 
-		const outputValue = Number(simulation.outputTokenAmount ?? 0);
-		const gasValue = simulation.approveTxGasUsed + simulation.swapTxGasUsed;
-		if (!Number.isFinite(outputValue) || !Number.isFinite(gasValue)) {
+		const outputValue = new BigNumber(simulation.outputTokenAmount ?? 0);
+		const gasValue = new BigNumber(simulation.approveTxGasUsed).plus(
+			simulation.swapTxGasUsed,
+		);
+
+		if (!outputValue.isFinite() || !gasValue.isFinite()) {
 			return {
 				...item,
-				score: 0,
+				score: Number.POSITIVE_INFINITY,
 			};
 		}
 
 		const outputNorm =
 			simulationOutputMax === simulationOutputMin
-				? 0
-				: (outputValue - simulationOutputMin) /
-					(simulationOutputMax - simulationOutputMin);
+				? new BigNumber(1)
+				: outputValue
+						.minus(simulationOutputMin)
+						.dividedBy(simulationOutputMax - simulationOutputMin);
+
 		const gasNorm =
 			simulationGasMax === simulationGasMin
-				? 0
-				: (gasValue - simulationGasMin) /
-					(simulationGasMax - simulationGasMin);
+				? new BigNumber(0)
+				: gasValue.minus(simulationGasMin).dividedBy(simulationGasMax - simulationGasMin);
 
-		const score = Math.sqrt(
-			(outputNorm - simulationOutputMax) ** 2 +
-				(gasNorm - simulationGasMin) ** 2,
+		const outputDelta = outputNorm.minus(1);
+		const gasDelta = gasNorm.minus(0);
+
+		const euclidean = outputDelta.pow(2).plus(gasDelta.pow(2)).sqrt();
+		const normalized = euclidean.dividedBy(sqrtTwo); // 0..1
+		const bounded = BigNumber.maximum(
+			0,
+			BigNumber.minimum(1, normalized),
 		);
 
 		return {
 			...item,
-			score: Number.isFinite(score) ? Number(score.toFixed(6)) : 0,
+			score: bounded.isFinite()
+				? Number(bounded.decimalPlaces(6, BigNumber.ROUND_HALF_UP).toString())
+				: Number.POSITIVE_INFINITY,
 		};
 	});
 };
@@ -828,7 +823,7 @@ export const getQuoteComparison = createServerFn({
 		const tokenAmount = data?.tokenAmount ?? "1000000000000000000";
 		const order = toOrder(data?.order);
 		const disablePrice = data?.disablePrice ?? "false";
-		const timeoutMs = 30_000;
+		const timeoutMs = 100_000;
 
 		try {
 			const result = await Promise.race<QuoteComparisonResult>([
@@ -919,7 +914,7 @@ export const getQuoteComparison = createServerFn({
 				})(),
 				new Promise<QuoteComparisonResult>((_, reject) =>
 					setTimeout(
-						() => reject(new Error("getQuoteComparison timed out after 10 seconds")),
+						() => reject(new Error("getQuoteComparison timed out after 100 seconds")),
 						timeoutMs,
 					),
 				),
